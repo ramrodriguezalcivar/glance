@@ -927,7 +927,10 @@ function sendAck(kind){
    The second is the dangerous one — an always-on panel showing confidently stale state is
    worse than one admitting it is offline — so a watchdog treats silence as a disconnect.
    The server should send at least one frame every 10s, a heartbeat if nothing changed. */
-var ORIGIN='http://127.0.0.1:7777';
+/* Served by the same process that streams /events, so derive the origin rather than
+   hard-coding it: changing PORT in server.js then works without editing the client
+   too. The literal is only a fallback for opening this file straight off disk. */
+var ORIGIN=/^https?:$/.test(location.protocol)?location.origin:'http://127.0.0.1:7777';
 var STALE_MS=30000, RETRY_MIN=1000, RETRY_MAX=15000;
 var es=null, retry=RETRY_MIN, staleTimer=null, retryTimer=null;
 

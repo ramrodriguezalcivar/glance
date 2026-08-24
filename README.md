@@ -6,9 +6,11 @@ session on your machine — and takes over when a meeting is about to start.
 It is furniture, not an app. Most of the day it is peripheral vision. You glance
 at it; you never study it.
 
-![the panel, working](docs/state-working.png)
+![the full ladder, from idle to a meeting starting](docs/demo.gif)
 
-*Working on one session, another waiting, the next meeting on the strip.*
+*The whole ladder in 20 seconds: idle, working, needing you, the peek overlay,
+then a meeting closing in until the panel locks — and stands down when you
+acknowledge it.*
 
 ## What it does
 
