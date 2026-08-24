@@ -1,0 +1,13 @@
+{
+  "name": "glance-panel-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron wrapper that pins Glance to the panel display",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.4.1"
+  }
+}

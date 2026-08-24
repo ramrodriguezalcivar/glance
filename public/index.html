@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Glance</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  Glance panel. Save as public/index.html.
+
+  One self-contained file: inlined tokens, two base64 sprite sheets, CSS steps() animation.
+  No build, no bundler, no network, no webfonts, no npm. The device has none of those and
+  this file must survive weeks unattended.
+
+  ── THE CONTRACT ───────────────────────────────────────────────────
+
+  GET http://127.0.0.1:7777/events — text/event-stream, one JSON object per frame:
+
+  {
+    "kind":       "idle" | "working" | "your_turn" | "needs_input" | "meeting",
+    "escalation":  0 | 1 | 2 | 3,        // meetings only; 1+ means it has STARTED
+    "accent":     "neutral" | "green" | "amber" | "blue" | "red",
+    "locked":      false,                // a meeting that can no longer be dismissed
+    "label":      "needs you",           // for logs; lands on data-screen-label
+    "lines":     ["NEEDS YOU", "Rocket telemetry parser", "Edit"],
+    "strip":      null,                  // THE DISPLAY COMPOSES THE STRIP. Send null.
+                                         //   A string here does not ADD to the roll-up, it
+                                         //   REPLACES it — suppressing the pips, the adaptive
+                                         //   shedding and the peek hint along with it. Use it
+                                         //   only for something TRANSIENT that must pre-empt
+                                         //   the roll-up for a few seconds: the dismiss hint,
+                                         //   "on my way", a flash. NEVER for a summary you
+                                         //   have already computed — counts + list say it, and
+                                         //   only the display knows how much room it has.
+    "stripDim":   false,                 // render that string dim, not muted
+    "sessions":   6,                     // TOTAL live sessions; may exceed list.length
+    "counts":    {"working":4,"needs_input":1,"awaiting":1},   // over ALL sessions
+    "list":     [{"name":"...","state":"needs_input","tool":"Edit"}, ...],  // urgency order,
+                                         //   most urgent FIRST — it is the one on line 1
+    "peek":      {"list":[...], "agenda":[...]} | null,        // defaults to list + agenda
+    "meeting":   {"name":"Design review","startsInSec":-320} | null,
+    "defaultSource": "work",             // which source goes UNMARKED in peek. Absent = no
+                                         //   tags at all. Never assumed by the client.
+    "allDay":   [{"summary":"School holiday","source":"family"}, ...],  // no time, no ladder;
+                                         //   renders in the WINDOW with the weather, and in
+                                         //   peek. Order is yours — the window shows [0], and
+                                         //   peek shows as many as the box holds (see RCOL_ROWS).
+    "agenda":   [{"t":"16:00","name":"Standup","tomorrow":false}, ...],  // EXCLUDING
+                                         //   the active meeting — line 0 already has it
+    "weather":   {"temp":14,"condition":"clear"|"cloudy"|"rain"|"snow",
+                  "next":{"at":"00:00","temp":18,"storm":false}} | null,
+    "messages":  ["outlook","teams"],    // optional; desk objects, never a state
+    "mascot":    "you-a"                 // optional; you-a .. you-f (default you-f)
+  }
+
+  Send a frame on every change AND at least every 10s. A quiet socket is treated as a dead
+  one after 30s: an always-on panel showing confidently stale state is worse than one
+  admitting it is offline.
+
+  Optional: POST /ack {kind, meeting} — fired best-effort when the user presses the key on
+  a meeting. A 404 is harmless.
+
+  ── WHAT THE CLIENT DECIDES ─────────────────────────────────────────
+
+  Three things, and only three, because the server cannot know them:
+    • offline      — "I cannot hear you" is not something you can be told
+    • the clock    — no payload field carries time
+    • peek         — a local, self-closing gesture
+
+  Everything else is a lookup from the payload to a data-* attribute, and every art
+  decision after that is a CSS selector. Debug keys M / N / [ / ] change the view only.
+-->
+<style>
+/* ── Glance panel · v4 ────────────────────────────────────────────────────────
+   Everything new here obeys one rule, because without it the panel becomes a
+   dashboard and stops being glanceable:
+
+     THE WINDOW CARRIES THE WORLD. THE DESK CARRIES CLAUDE. THE STRIP CARRIES WHAT'S NEXT.
+
+   Weather, time and temperature live in the window — ambient, never urgent, read
+   by looking at a picture rather than reading text. Claude's state owns the desk
+   and the character. The strip is the only place that lists things. Nothing new
+   was allowed into line 0.
+   ──────────────────────────────────────────────────────────────────────────── */
+:root{
+  --ground:#04060c;--sill:#131a26;--frame:#0b111c;--bld:#0b1220;
+  --desk:#0f141d;--desk-back:#0b0f16;--desk-near:#161d29;--desk-edge:#222a38;
+  --lift:#0b0e14;--rule:#1c2027;--veil:rgba(0,0,0,.72);
+  --text:#e9eaed;--text-muted:#8a9099;--text-dim:#4a4f56;
+  --accent-neutral:#8a9099;--accent-green:#4ade80;--accent-amber:#fbbf24;--accent-blue:#7dd3fc;--accent-red:#f87171;
+  --font-panel:ui-monospace,Menlo,"SF Mono",Consolas,monospace;
+  --u:7.2px;
+  --accent:var(--accent-neutral);
+  --sky-top:#04060c;--sky-low:#0a1120;--star-op:.34;--win-op:.22;--pool-op:1;--cloud-op:.35;
+  --disc-x:calc(var(--px)*46);--disc-y:calc(var(--px)*.5);--wx-tint:transparent;
+}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:var(--font-panel)}
+/* The panel IS the viewport, so --u is 1vmin. Every token derived from --u is redeclared
+   here rather than left at :root: a custom property resolves its var() where it is
+   DECLARED, so at :root these would peg to the fallback and never follow the viewport. */
+.panel{position:fixed;inset:0;background:var(--ground);color:var(--text);font-variant-ligatures:none;overflow:hidden;-webkit-font-smoothing:antialiased;
+  --u:1vmin;--px:calc(var(--u)*2.5);--hairline:calc(var(--u)*.3);--dust:calc(var(--px)/3);
+  --safe:var(--px);--strip-h:calc(var(--px)*3.4);--cell:calc(var(--px)*16);--prop:calc(var(--px)*10)}
+.field{position:absolute;inset:var(--safe)}
+.lay{position:absolute;pointer-events:none}
+
+/* ── the window ─────────────────────────────────────────────────────────────── */
+.sky{left:0;right:0;top:0;height:calc(var(--px)*21);background:linear-gradient(180deg,var(--sky-top),var(--sky-low));transition:background 1200ms linear;overflow:hidden}
+.wx-tint{position:absolute;inset:0;background:var(--wx-tint);transition:background 1200ms linear}
+.star{position:absolute;width:var(--dust);height:var(--dust);background:#c9ccd1;opacity:var(--star-op);transition:opacity 1200ms linear}
+.star.t1{animation:tw 3400ms steps(2) infinite}
+.star.t2{animation:tw 5100ms steps(2) infinite}
+@keyframes tw{0%{opacity:var(--star-op)}50%{opacity:calc(var(--star-op)*.35)}100%{opacity:var(--star-op)}}
+/* A shooting star every 45 seconds, and only when there are stars to shoot. Six frames
+   of travel out of a 45s loop: you catch it about as often as you would a real one. */
+.shoot{position:absolute;left:calc(var(--px)*8);top:calc(var(--px)*2);width:calc(var(--px)*.5);height:calc(var(--px)*.5);background:#e9eaed;opacity:0}
+[data-stars=on] .shoot{animation:shoot 45s steps(6) infinite}
+@keyframes shoot{0%{transform:translate(0,0);opacity:0}1%{opacity:.9}5%{transform:translate(calc(var(--px)*26),calc(var(--px)*9));opacity:.9}6%{opacity:0}100%{transform:translate(calc(var(--px)*26),calc(var(--px)*9));opacity:0}}
+.lay.disc{--prop:calc(var(--px)*6);width:var(--prop);height:var(--prop);transition:left 1200ms linear,top 1200ms linear,opacity 900ms linear}
+.moon{left:var(--disc-x);top:var(--disc-y);opacity:var(--moon-op,1);animation:drift 240s steps(6) infinite}
+@keyframes drift{from{transform:translate(0,0)}to{transform:translate(calc(var(--px)*4),calc(var(--px)*1))}}
+/* One token per scene decides which disc is up. Two long selector lists is how the sun
+   went missing in the first place. */
+.sun{left:var(--disc-x);top:var(--disc-y);opacity:var(--sun-op,0)}
+.cloud{left:0;opacity:var(--cloud-op);transition:opacity 1200ms linear;animation-name:cd;animation-timing-function:steps(83);animation-iteration-count:infinite}
+/* Clouds traverse and wrap: -12 px̄ (fully off the left) to 71 px̄ (fully off the right),
+   83 px̄ of travel in steps(83) — exactly one master pixel per step, so a cloud is never
+   drawn between grid positions. linear would slide a pixel sprite sub-pixel, which is the
+   thing the no-tween rule exists to prevent; at 300s a step lands every 3.6s, so the motion
+   reads as continuous drift without ever leaving the grid.
+
+   All five share left:0 and are spaced by NEGATIVE animation-delay, not by left. A delay
+   phases the cloud into the middle of its own cycle, which a left offset cannot do: with
+   left, a cloud starting at 56 would travel to 127 and spend most of its cycle off-panel.
+   Each delay below is set so the cloud begins exactly where it used to sit. */
+@keyframes cd{from{transform:translateX(calc(var(--px) * -12))}to{transform:translateX(calc(var(--px) * 71))}}
+.c1{top:calc(var(--px)*2);animation-duration:300s;animation-delay:-54s}
+.c2{top:calc(var(--px)*4);animation-duration:420s;animation-delay:-218s}
+.c3{top:calc(var(--px)*1);animation-duration:360s;animation-delay:-295s}
+.c4,.c5{opacity:0;transition:opacity 1200ms linear}
+.c4{top:calc(var(--px)*6);animation-duration:500s;animation-delay:-175s}
+.c5{top:calc(var(--px)*7);animation-duration:380s;animation-delay:-256s}
+[data-wx=cloudy] .c4,[data-wx=cloudy] .c5,[data-wx=rain] .c4,[data-wx=rain] .c5,[data-wx=snow] .c4,[data-wx=snow] .c5{opacity:calc(var(--cloud-op)*.8)}
+/* Precipitation: fixed columns, steps() only. It is weather, not a particle system. */
+.drop{position:absolute;background:#8fa2b8;opacity:0}
+[data-wx=rain] .drop{width:var(--dust);height:calc(var(--px)*1.6);opacity:.5;animation:fall 900ms steps(6) infinite}
+[data-wx=snow] .drop{width:var(--dust);height:var(--dust);background:#dfe3e8;opacity:.62;animation:fall 4200ms steps(12) infinite}
+@keyframes fall{from{transform:translateY(calc(var(--px)*-3))}to{transform:translateY(calc(var(--px)*22))}}
+.skyline{left:0;right:0;top:calc(var(--px)*13);height:calc(var(--px)*8);display:flex;align-items:flex-end;gap:var(--px)}
+.bld{background:var(--bld);position:relative}
+.win{position:absolute;width:var(--dust);height:var(--dust);background:var(--accent-amber);opacity:var(--win-op);transition:opacity 900ms linear}
+/* Each lit window keeps its own slow cycle, so the city fills up over the evening
+   instead of switching on all at once. Durations are fixed per index, never random. */
+.win[data-cyc] {animation:winblink var(--wc,17s) steps(2) infinite}
+@keyframes winblink{0%,45%{opacity:var(--win-op)}50%,95%{opacity:calc(var(--win-op)*.15)}100%{opacity:var(--win-op)}}
+.sill{left:0;right:0;top:calc(var(--px)*20);height:var(--px);background:var(--sill)}
+.frm-t{left:0;right:0;top:0;height:calc(var(--px)*1.5);background:var(--frame)}
+.frm-l{left:0;top:0;width:var(--px);height:calc(var(--px)*20);background:var(--frame)}
+.frm-r{right:0;top:0;width:var(--px);height:calc(var(--px)*20);background:var(--frame)}
+/* Clock and weather: the only numbers that are never urgent, so they sit far from
+   line 0 in the calmest corner and never change colour. */
+.wxblock{right:calc(var(--px)*1.6);top:calc(var(--px)*2.2);text-align:right;line-height:1.35}
+.wx-time{font-size:calc(var(--u)*4.5);color:var(--wx-fg-2,#6c7783);letter-spacing:.04em}
+.wx-now{font-size:calc(var(--u)*4.5);color:var(--wx-fg,#8a9099)}
+.wx-next{font-size:calc(var(--u)*3.5);color:var(--wx-fg-dim,#5a636e)}
+/* All-day events live here, with the weather, because they are the same class of thing: a
+   property of the day rather than a moment in it. The window already carries the day — the
+   sky, the sun's arc, the clock — so a fact that is true all day belongs with them. Putting
+   it here is also the structural guarantee that it cannot compete with meetings: it is in a
+   different region of the panel from line 0 and from the strip's rail. */
+/* Right-anchored at 13 master pixels, not 1: the character owns the rightmost 12 and his
+   sleeping "z" sits in the top-right of that cell, exactly where an all-day counter would
+   land. Reported as "the +1 is sliced in half" — it was not clipped at all, it was colliding
+   with Claw'd. THE RULE, which previously only covered below row 15: nothing enters the
+   character's column, at any height. The clearance is 17 — the sprite CELL is 16 wide, not
+   the 12 the character fills, and poses with both arms up occupy the corners the idle pose
+   leaves empty. Clear the cell, not the silhouette. */
+.wx-day{display:flex;align-items:baseline;gap:calc(var(--px)*.4);right:calc(var(--px)*17);top:calc(var(--px)*17.7);font-size:calc(var(--u)*3.5);color:var(--wx-fg-dim,#5a636e);max-width:calc(var(--px)*34)}
+.wx-day[hidden],.wxblock [hidden]{display:none}
+/* The count never yields: a "+2" you cannot see is worse than a clipped word. The name has
+   the whole lower window to grow into, so in practice neither is clipped. */
+.wx-day b{font-weight:400;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wx-day i{font-style:normal;flex:0 0 auto}
+/* The only weather element allowed an accent: an incoming storm is the one forecast that
+   changes what you do next, so it gets amber. Everything else stays grey and ignorable. */
+.wx-next[data-storm]{color:var(--accent-amber)}
+
+/* ── the desk ───────────────────────────────────────────────────────────────── */
+.desk{left:0;right:0;top:calc(var(--px)*21);bottom:0;background:linear-gradient(180deg,var(--desk-back) 0,var(--desk) calc(var(--px)*2),var(--desk-near) 100%)}
+.pool{right:calc(var(--px)*-3);top:calc(var(--px)*19);width:calc(var(--px)*30);height:calc(var(--px)*16);opacity:var(--pool-op);background:radial-gradient(ellipse at 58% 22%,rgba(232,176,122,.12),rgba(232,176,122,.05) 45%,rgba(232,176,122,0) 72%);animation:flick 5000ms steps(2) infinite;transition:opacity 1200ms linear}
+@keyframes flick{0%{opacity:var(--pool-op)}50%{opacity:calc(var(--pool-op)*.82)}100%{opacity:var(--pool-op)}}
+.edge{left:0;right:0;top:calc(var(--px)*34);height:var(--hairline);background:var(--desk-edge)}
+.prop{width:var(--prop);height:var(--prop);background-repeat:no-repeat;background-size:calc(var(--prop)*5) calc(var(--prop)*3);image-rendering:pixelated}
+.p-moon{background-position:0 0}
+.p-lamp{background-position:calc(var(--prop)*-1) 0}
+.p-keyb{background-position:calc(var(--prop)*-2) 0}
+.p-mug{background-position:calc(var(--prop)*-3) 0}
+.p-plant{background-position:calc(var(--prop)*-4) 0}
+.p-env{background-position:0 calc(var(--prop)*-1)}
+.p-bub{background-position:calc(var(--prop)*-1) calc(var(--prop)*-1)}
+.p-cal{background-position:calc(var(--prop)*-2) calc(var(--prop)*-1)}
+.p-sun{background-position:calc(var(--prop)*-3) calc(var(--prop)*-1)}
+.p-cloud{background-position:calc(var(--prop)*-4) calc(var(--prop)*-1)}
+.p-papers{background-position:0 calc(var(--prop)*-2)}
+.p-mouse{background-position:calc(var(--prop)*-1) calc(var(--prop)*-2)}
+.p-cactus{background-position:calc(var(--prop)*-2) calc(var(--prop)*-2)}
+.plant{left:0;top:calc(var(--px)*24)}
+.cactus{left:calc(var(--px)*8);top:calc(var(--px)*24)}
+.mug{left:calc(var(--px)*15);top:calc(var(--px)*25)}
+.papers{left:calc(var(--px)*22);top:calc(var(--px)*25)}
+/* The lamp hangs clear of the character's headroom. A 12-row mascot at its late_3 peak
+   reaches panel row 18; the shade used to end at row 16, and one master pixel between two
+   dark masses reads as one mass at 30 inches. At row 9 the shade ends at 14 and there are
+   three clear rows. Claw'd never exposed this — he is 8 rows and never got near it. */
+.lamp{right:calc(var(--px)*1);top:calc(var(--px)*9)}
+.cord{right:calc(var(--px)*5.4);top:0;width:var(--dust);height:calc(var(--px)*11);background:#2a3240}
+.keyb{left:calc(var(--px)*55);top:calc(var(--px)*26);opacity:0}
+[data-pose=working] .keyb{opacity:1}
+
+/* ── the machine: one bar per live session ──────────────────────────────────
+   This is the multi-project answer made visual. The main block still names only the
+   most urgent session, but the screen shows how many are running and what each is
+   doing — height and colour per state — so "three projects, one wants me" is a
+   silhouette rather than a sentence. */
+.mon{left:calc(var(--px)*44);top:calc(var(--px)*22);width:calc(var(--px)*12);height:calc(var(--px)*8);background:#1f242e}
+.mon-scr{position:absolute;left:var(--px);top:var(--px);right:var(--px);bottom:calc(var(--px)*2);background:#0a0e14;overflow:hidden}
+.mon-scr::before{content:"";position:absolute;inset:0;background:var(--accent);opacity:.09}
+.mon-bar{position:absolute;bottom:0;width:var(--px)}
+.mon-bar[data-s=working]{animation:barA 900ms steps(3) infinite}
+.mon-bar[data-s=working].odd{animation:barB 900ms steps(3) infinite}
+@keyframes barA{0%{height:var(--px)}33%{height:calc(var(--px)*3)}66%{height:calc(var(--px)*2)}100%{height:var(--px)}}
+@keyframes barB{0%{height:calc(var(--px)*3)}33%{height:var(--px)}66%{height:calc(var(--px)*4)}100%{height:calc(var(--px)*3)}}
+.mon-cal{position:absolute;--prop:calc(var(--px)*8);left:var(--px);top:calc(var(--px)*-.7);opacity:0;transition:opacity 320ms steps(2)}
+[data-source=calendar] .mon-cal{opacity:1}
+[data-monitor=off] .mon{display:none}
+[data-pose=offline] .mon{opacity:.35}
+[data-pose=offline] .mon-scr::before{opacity:0}
+
+.msgs{left:calc(var(--px)*29);top:calc(var(--px)*27);height:var(--prop)}
+.msg{position:absolute;top:0;animation:drop 320ms steps(4) 1 both}
+@keyframes drop{from{transform:translateY(calc(var(--px)*-4));opacity:0}to{transform:translateY(0);opacity:1}}
+
+.mascot{right:0;top:calc(var(--px)*17);width:var(--cell);height:var(--cell);background-repeat:no-repeat;background-size:calc(var(--cell)*4) calc(var(--cell)*10);background-position-x:0;background-position-y:calc(var(--row,0)*var(--cell)*-1);image-rendering:pixelated;animation:var(--anim,none) var(--dur,1s) var(--steps,steps(2)) infinite}
+@keyframes f2{from{background-position-x:0}to{background-position-x:calc(var(--cell)*-2)}}
+@keyframes f3{from{background-position-x:0}to{background-position-x:calc(var(--cell)*-3)}}
+@keyframes f4{from{background-position-x:0}to{background-position-x:calc(var(--cell)*-4)}}
+
+/* ── type ───────────────────────────────────────────────────────────────────── */
+.stack{position:absolute;left:calc(var(--px)*3);top:calc(var(--px)*4)}
+.l0{font-size:calc(var(--u)*10);font-weight:700;letter-spacing:calc(var(--u)*.4);line-height:1.18;color:var(--accent);white-space:nowrap}
+.l1{font-size:calc(var(--u)*7.5);font-weight:500;line-height:1.18;color:var(--text);white-space:nowrap;overflow:hidden;max-width:28ch}
+.l2{font-size:calc(var(--u)*5);line-height:1.18;color:var(--text-muted);white-space:nowrap}
+.l1:empty,.l2:empty{display:none}
+
+/* ── the strip: sessions on the left, what's next on the right ─────────────── */
+.strip{position:absolute;left:0;right:0;bottom:0;height:var(--strip-h);background:var(--lift);border-top:var(--hairline) solid var(--rule);display:flex;align-items:center;justify-content:space-between;gap:calc(var(--px)*3);padding-inline:calc(var(--px)*2);font-size:calc(var(--u)*4.4);letter-spacing:.02em;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+.sl,.sr{display:flex;align-items:center;gap:calc(var(--px)*1.4)}
+.sl{flex:0 1 auto;min-width:0;overflow:hidden}
+.sl>.grp{min-width:0}
+.sl .grp span{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sr{color:var(--text-dim);flex:0 0 auto;min-width:0;justify-content:flex-end}
+.sr span{overflow:hidden;text-overflow:ellipsis}
+.sr b{font-weight:400;color:var(--text-muted)}
+.grp{display:flex;align-items:center;gap:calc(var(--px)*.6)}
+.sep{color:var(--text-dim)}
+.pip{width:var(--px);height:var(--px);flex:0 0 auto}
+.pip[data-s=needs_input]{background:var(--accent-amber)}
+.pip[data-s=awaiting]{box-sizing:border-box;border:var(--hairline) solid var(--accent-blue)}
+.pip[data-s=working]{height:calc(var(--px)/2);align-self:flex-end;background:var(--accent-green)}
+.pip[data-s=offline]{box-sizing:border-box;border:var(--hairline) solid var(--text-dim)}
+
+/* Peek uses the desk's WIDTH, not its height: sessions on the left, what is coming on the
+   right. Stacking them vertically ran out of rows at four sessions, and a peek that clips
+   is worse than no peek. */
+.peek{position:absolute;left:0;right:0;top:calc(var(--px)*21);bottom:var(--strip-h);background:#05070d;border-top:var(--hairline) solid var(--rule);padding:calc(var(--px)*1.2) calc(var(--px)*1.8);box-sizing:border-box;display:none;gap:calc(var(--px)*2.5);overflow:hidden}
+.pcol{display:flex;flex-direction:column;justify-content:center;gap:calc(var(--px)*.45);min-width:0}
+.pcol.left{flex:0 1 auto}
+.pcol.right{flex:0 1 auto;border-left:var(--hairline) solid var(--rule);padding-left:calc(var(--px)*1.2)}
+.panel[data-peek=true] .peek{display:flex;justify-content:space-between;animation:rise 180ms steps(3) both}
+/* Peek auto-closes, so it needs a visible clock. Eight steps over eight seconds is one
+   step per second — a countdown you can read, and it keeps the no-tween rule the rest of
+   the system follows. */
+.peekbar{position:absolute;left:0;top:calc(var(--px)*21);height:var(--hairline);background:var(--text-muted);width:0;display:none}
+.panel[data-peek=true] .peekbar{display:block}
+@keyframes drain{from{width:100%}to{width:0}}
+@keyframes rise{from{transform:translateY(calc(var(--px)*4))}to{transform:translateY(0)}}
+.prow{display:flex;align-items:center;gap:calc(var(--px)*.9);font-size:calc(var(--u)*3.9);line-height:1.15;color:var(--text);white-space:nowrap;overflow:hidden}
+.prow>span{min-width:0;flex:0 1 auto;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}
+.prow>b{flex:0 0 auto}
+.prow>em{min-width:0;flex-shrink:20;overflow:hidden;text-overflow:ellipsis}
+.prow em{font-style:normal;color:var(--text-muted);margin-left:auto;font-size:calc(var(--u)*3.6)}
+.prow.ag{font-size:calc(var(--u)*3.8);color:var(--text-muted)}
+.prow.ag b{font-weight:400;color:var(--text);min-width:5ch}
+.phead{font-size:calc(var(--u)*3.2);letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);margin-bottom:calc(var(--px)*.3)}
+.veil{position:absolute;inset:0;background:var(--veil)}
+
+/* ── payload → art ─────────────────────────────────────────────────────────── */
+[data-accent=neutral]{--accent:var(--accent-neutral)}
+[data-accent=green]{--accent:var(--accent-green)}
+[data-accent=amber]{--accent:var(--accent-amber)}
+[data-accent=blue]{--accent:var(--accent-blue)}
+[data-accent=red]{--accent:var(--accent-red)}
+[data-pose=idle] .mascot{--row:0;--anim:f2;--dur:1200ms;--steps:steps(2)}
+[data-pose=working] .mascot{--row:1;--anim:f4;--dur:140ms;--steps:steps(4)}
+[data-pose=your_turn] .mascot{--row:2;--anim:f2;--dur:900ms;--steps:steps(2)}
+[data-pose=needs_input] .mascot{--row:3;--anim:f2;--dur:380ms;--steps:steps(2)}
+[data-pose=meeting] .mascot{--row:4;--anim:f2;--dur:500ms;--steps:steps(2)}
+[data-pose=meeting_locked] .mascot{--row:5;--anim:f2;--dur:300ms;--steps:steps(2)}
+[data-pose=late_1] .mascot{--row:6;--anim:f2;--dur:220ms;--steps:steps(2)}
+[data-pose=late_2] .mascot{--row:7;--anim:f3;--dur:160ms;--steps:steps(3)}
+[data-pose=late_3] .mascot{--row:8;--anim:f4;--dur:100ms;--steps:steps(4)}
+[data-pose=offline] .mascot{--row:9;--anim:none}
+[data-locked=true] .l0{animation:breath 1600ms linear infinite}
+@keyframes breath{0%,100%{opacity:1}50%{opacity:.55}}
+/* Refusal: two hard blinks. Distinct from the locked countdown's slow 1600ms breath — the
+   breath is a state, this is an answer to something you just did. */
+.l0.refuse{animation:refuse 200ms steps(2) 2 !important}
+@keyframes refuse{0%,100%{opacity:1}50%{opacity:.2}}
+[data-pose=late_2] .stack{animation:nudge 160ms steps(2) infinite}
+[data-pose=late_3] .field{animation:shake 100ms steps(4) infinite}
+[data-pose=late_3] .pool{animation:none}
+@keyframes nudge{0%{transform:translateX(0)}50%{transform:translateX(var(--px))}100%{transform:translateX(0)}}
+@keyframes shake{0%{transform:translate(0,0)}25%{transform:translate(calc(var(--px)*-1),0)}50%{transform:translate(0,calc(var(--px)*-1))}75%{transform:translate(var(--px),0)}100%{transform:translate(0,0)}}
+[data-offline=true]{--accent:var(--text-dim);--text:var(--text-dim);--text-muted:#3a3e44;--accent-green:var(--text-dim);--accent-amber:var(--text-dim);--accent-blue:var(--text-dim);--accent-red:var(--text-dim);--pool-op:0}
+[data-offline=true] .sky{background:#04060c}
+[data-offline=true] .prop,[data-offline=true] .disc,[data-offline=true] .mascot{filter:grayscale(1) brightness(.5)}
+[data-offline=true] .skyline{filter:brightness(.4)}
+[data-offline=true] .drop{opacity:0;animation:none}
+[data-ambient=night]{--text:#b9bcc2;--text-muted:#6c7178;--accent-green:#3aad64;--accent-amber:#c4951c;--accent-blue:#62a5c5;--accent-red:#c25858}
+[data-ambient=night] .mascot,[data-ambient=night] .prop{filter:brightness(.79)}
+.swap{animation:sw 320ms linear both}
+@keyframes sw{from{opacity:0}to{opacity:1}}
+
+/* The day is 2.4x brighter than it was, and midday is now 39x night rather than 15x.
+   The old cap came from "a light field turns the panel into a lamp" — but that is a NIGHT
+   constraint and night is its own scene, keeping #04060c regardless of what midday does.
+   Brightening the day only changes the hours when the room lights are on.
+   The ceiling is not line 1: it is line 2 and the red used for LATE, both of which sit over
+   the sky and fail long before #e9eaed does. So each daylight scene lifts --text-muted and
+   --accent-red with its sky — the same per-scene treatment the weather tones already get.
+   Every reading clears 3:1 and line 1 clears 4.5:1; midday's worst is 3.31.
+   The desk deliberately does NOT lift: a charcoal jacket is already only 1.93:1 against it,
+   and a lighter desk costs more silhouette than it buys daylight.
+── the day cycle ─────────────────────────────────────────────────────────── */
+[data-tod=night]  {--sky-top:#04060c;--sky-low:#0a1120;--star-op:.34;--win-op:.22;--pool-op:1;--cloud-op:.35;--disc-x:calc(var(--px)*46);--disc-y:calc(var(--px)*.5);--moon-op:1;--sun-op:0;--wx-fg:#8a9099;--wx-fg-2:#6c7783;--wx-fg-dim:#5a636e}
+[data-tod=dawn]   {--sky-top:#151d35;--sky-low:#453a4f;--star-op:.14;--win-op:.18;--pool-op:.8;--cloud-op:.5;--disc-x:calc(var(--px)*12);--disc-y:calc(var(--px)*1.5);--moon-op:0;--sun-op:1;--wx-fg:#a9aeb9;--wx-fg-2:#8b93a0;--wx-fg-dim:#767e8c--wx-fg:#bfc2c7;--wx-fg-2:#abafb6;--wx-fg-dim:#9aa0a7;--text-muted:#969ba3;--accent-red:#f97f7f;}
+[data-tod=morning]{--sky-top:#283a5b;--sky-low:#526d8a;--star-op:0;--win-op:.06;--pool-op:.45;--cloud-op:.6;--disc-x:calc(var(--px)*26);--disc-y:calc(var(--px)*.5);--moon-op:0;--sun-op:1;--wx-fg:#c3cbd6;--wx-fg-2:#a8b2c0;--wx-fg-dim:#97a2b2--wx-fg:#cdcfd3;--wx-fg-2:#b9bcc2;--wx-fg-dim:#a8adb4;--text-muted:#a4a8af;--accent-red:#fa9090;}
+[data-tod=midday] {--sky-top:#334c74;--sky-low:#6381a0;--star-op:0;--win-op:0;--pool-op:.28;--cloud-op:.7;--disc-x:calc(var(--px)*40);--disc-y:0;--moon-op:0;--sun-op:1;--wx-fg:#d3dbe6;--wx-fg-2:#b6c1cf;--wx-fg-dim:#9fb0c4--wx-fg:#d6d8db;--wx-fg-2:#c2c5ca;--wx-fg-dim:#b2b6bc;--text-muted:#adb1b8;--accent-red:#fa9c9c;}
+[data-tod=dusk]   {--sky-top:#1e2541;--sky-low:#534756;--star-op:.12;--win-op:.22;--pool-op:.85;--cloud-op:.55;--disc-x:calc(var(--px)*54);--disc-y:calc(var(--px)*1.5);--moon-op:0;--sun-op:1;--wx-fg:#b0b5bf;--wx-fg-2:#9297a2;--wx-fg-dim:#7f858f--wx-fg:#c3c6cb;--wx-fg-2:#afb4ba;--wx-fg-dim:#9fa4ab;--text-muted:#9aa0a7;--accent-red:#f98585;}
+/* Weather darkens or flattens whatever the hour already decided — it never replaces it. */
+[data-wx=cloudy]{--wx-tint:rgba(20,26,38,.4);--star-op:.05}
+[data-wx=rain]{--wx-tint:rgba(10,14,22,.62);--star-op:0;--win-op:.26}
+[data-wx=snow]{--wx-tint:rgba(70,84,104,.28);--star-op:0}
+
+
+.prow.ag b.ad{color:var(--text-dim);font-weight:400}
+/* An acknowledged meeting keeps its line but drops to dim — the key visibly did something. */
+.grp.dim{color:var(--text-dim)}
+.wxblock[hidden]{display:none}
+</style></head>
+<body>
+<div class="panel" id="panel" data-accent="green" data-pose="working" data-ambient="room" data-source="claude" data-peek="false" data-tod="night" data-monitor="on" data-wx="clear" data-stars="on">
+  <div class="field">
+    <div class="lay sky" id="sky">
+      <div class="wx-tint"></div>
+      <div class="shoot"></div>
+    </div>
+    <div class="lay cloud c1 prop p-cloud"></div>
+    <div class="lay cloud c2 prop p-cloud"></div>
+    <div class="lay cloud c3 prop p-cloud"></div>
+    <div class="lay cloud c4 prop p-cloud"></div>
+    <div class="lay cloud c5 prop p-cloud"></div>
+    <div class="lay disc moon prop p-moon"></div>
+    <div class="lay disc sun prop p-sun"></div>
+    <div class="lay cord"></div>
+    <div class="lay skyline" id="skyline"></div>
+    <div class="lay sill"></div>
+    <div class="lay wx-day" id="wxDay" hidden><b id="wxDayName"></b><i id="wxDayMore"></i></div>
+    <div class="lay frm-t"></div>
+    <div class="lay frm-l"></div>
+    <div class="lay frm-r"></div>
+    <div class="lay wxblock">
+      <div class="wx-time" id="wxTime">21:14</div>
+      <div class="wx-now" id="wxNow">14&deg;</div>
+      <div class="wx-next" id="wxNext"></div>
+    </div>
+    <div class="lay desk"></div>
+    <div class="lay pool"></div>
+    <div class="lay edge"></div>
+    <div class="lay lamp prop p-lamp"></div>
+    <div class="lay plant prop p-plant"></div>
+    <div class="lay cactus prop p-cactus"></div>
+    <div class="lay mug prop p-mug"></div>
+    <div class="lay papers prop p-papers"></div>
+    <div class="lay mon" id="mon">
+      <div class="mon-scr" id="monScr"><span class="mon-cal prop p-cal"></span></div>
+    </div>
+    <div class="lay msgs" id="msgs"></div>
+    <div class="lay keyb prop p-keyb"></div>
+    <div class="lay mascot" id="mascot"></div>
+    <div class="stack" id="stack"><div class="l0" id="l0"></div><div class="l1" id="l1"></div><div class="l2" id="l2"></div></div>
+    <div class="peek" id="peek"></div>
+    <div class="peekbar" id="peekbar"></div>
+    <div class="strip"><span class="sl" id="stripL"></span><span class="sr" id="stripR"></span></div>
+  </div>
+  <div class="veil" id="veil" hidden></div>
+</div>
+<script>
+var SHEETS={"you-a":"data:image/png;base64,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","you-b":"data:image/png;base64,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","you-c":"data:image/png;base64,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","you-d":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAACgCAYAAAC8LWpcAAAKiElEQVR4Aeycv6t9RxXF7/MvENTGws4mFoJlCKiFKJFgJyIo2GhhIwjfv8AqpIiFhQGxsFE7kQTsDGpsRBAkIZCQOiSBb0iV6oXPIWuyz9w9Z/acM+fHPXmB9WbP3mvPrLPufcnd90E+c9nhn2ef/+29sMP1oytnGSDxrKPTgptHv/jZHVStxHthlgESrrVVvIzT2trfkz/LAAnX2ioI44TW3t5814Cff/fJew+6XOJZlbOr10vOco4SjwxAJCiJowbWqpfOXTM/MkAXfecrn714UL22er3kan171F0DEPLaW2+zDLDxkAj8sD02DrRuSikagAqEA+I5oBfM6d2qJxmg3+3fvPjK3XMfPnF58YvfvLz+zC8HEJOjhjBxiQXl4MClp6Vf52y9JgO4GPFf/cGP7ok9UIPj1chRg0PsgRocr7ZXbmTAXiL2vDcZ0PLKeFwvV3qwFm7pjF75ZIAO/N8f/zB8TtferlM18aY4UzX1b71eGYCAd/7xnwv49/MvXAAxoBYBXEAvIAaR3q05rgFbi9jyvvwu14BX//v3Ow95c2nv9ZIr8ffMuwbsKWjrux8M2Nrxo93nvgP4WOshKt7rJXfE/pEBiAQlodTAmeojA/RgzO4eVK+tXi+5Wp/qcD2oXlu9XnJen2sAxJ+88E+WATYeEoEftsfGgdaBYntsPBQDP2yPjfPWogGPvvXlC7M8IM4ba3t66AXENX5ep4deQJzXa3t66AXEJX4yQL/bDCpz5vlb7U8G4BAPz1pCbZ6v9XPuFIcad8ArAc5UbaqfWt4/MkAHP377k+8DlWtZvX4vt/TMlv4SNxkgZ/766On7X33pvRJ/yIs7bD7+oVypnzOpQReXWPByqrEu7ecMwd6VDFDxmWdfGr4T1N6ukXm+1M+/V6jZ87y4dMfSfu7yzr4yACKzO/jdj394B4gBtQjgAnoBMYj0woEL6AXEgFoEcAG9gBh4va4BHvFWczXdrgHM7kDNxED72goXiEcMtK+tcIF4xED72goXiEcMtLera4AlnD1+MGCNV5hPhR7WuGvpme47wBNPrnYZHFDiUQOl+h75kQGIAyUh1ECprjyj55/+9f/0J3bFqh9pHRkgYT0e4Pc/fUrHXWyckgcJXAPQZkXbmFoEjKEWkZ49OEUDrHjimjj9avA5m4+tN/fn8R4PwMMzcpbMoganVN8jP3oHIA6RJSHU4JTqt5gfGbDkAVqMaeEu0RTpTQa0iJrieiOnhEzVxNl6TQbo4imRUzX1szJ6AkZRQAyoHQ1XBiAQsQDxgBhQOxtcA5Y+JKMn0DnEQPs119azXQMQC3QYMdD+TKtrwJkesPYsDwbUHDp7Pb0D+JSnh+VjsQfVa6vXS67Wt0c9GcDliATEHqgBr0aOGiD2QA14tb1yIwMkgu8DPKheW71ecrW+PequAQixf1O3MbUIbI+NI71bcooG8Dd1vgcAxK2i6KEXELf2b8VPBjz1wZvDnQw6c77Q0O/23P7h8h1+JAO4G/GsJfBfiikONThz+0t9a+ZHBqx50VHPTgbw6kVFelwvVzqvhVs6o1c+GRA5MPJ9wBRnqha5fw2OawCzP+C7AEAMogLgAnoBMYj2b8lzDdhSwNK7lva7BjD7Ax1ODLSvrXCBeMRA+yOtrgFHEri2lgcD1nb46Oe77wA+1nqIPozXSy7avyVvZAAiQUkANbBWvXTumvmRAbqI2d2D6rXV6yVX69uj7hqAEDvD25haBLbHxpHeLTlFA5jhmeUBcasoeugFxK39W/GTAfrdZlD5VH8fsGSex7wl/Vu96vae9A5Q8ogTm7StsSYDePWiF3hcL1c6r4VbOqNXPhkQOTDy7pjiTNUi96/BcQ1gdgfM8oAYRAXABfQCYhDt35LnGrClgNa7evNdA5jdgS4jBtrXVrhAPGKg/ZFW14AjCVxby4MBvRy2H4D4VOlBd1mucnut6R1gRXniyUmk5SrHCgcQe6AGvNpeuWQAAhAHiD1QA17N5hh9PVjOUeKRARLliSenemS1I7CNI71bclwDEGBF25haBIzAjMKAONKzB6doAKIRD4hr4lr+vC5u7cwt6skAiWJQqX0fIG4ukN48l+8jnLxnzX0ygEsi4iIczroVjAxYIrrFmBbuEk2R3mRAi6gWbkTEnpxkQE8RjL6AURgQg5539DrLNQCxAPGAGPS69EjnuAYsFcjoC3QOMdC+ZV2b6xqAWKDLiYH2Z1pdA870gLVneTCg5lC0bkdkJkYPOstyldtrTe8AK8oTT04iLVc5VjiA2AM14NX2yiUDEIA4QOyBGvBqNsfo7MFyjhKPDJAoTzw51SOrHaFtHOndkuMagAAr2sbUImCEZpQGxJGePThFAxCNeEBcE6cRmTlh7jhdu2ONejKgxwPw8DWREU7tjJ71ZACHRsRFOJx1KxgZsER0izEt3CWaIr3JgBZRLdyIiD05yYAeIp742jfuwcu/fu4OMEoDYkAN9Lir1xmuAcz+APGAGPS69EjnuAbMFcjIDEr91ECpTn5ruAYgEkgMMdD+TKtrwJkesPYs3QywEyIDkweJsVzl9lq7GcAD6KGJPUzVrSni5avOtFzl5q7JAHtofrH2usRylbMrk6MHy/Hi/J6cU6vn/Mg+GQC5dkGtzhmCnSBtrPrU6plHbqpnbm1kgA7hMg+qR1YmSCZJQBzpsRxrmo0tp0fsGsDB9lIbU/PQY5q052Ia5gFiW+sZFw3gUi4HxJFLIzNCidPbwIheOMmAvQQgQiiZozprhAMvimQADZHDS5xSnnNztHDz3t77kQG9D285r8WUFm5NQzKg5dASl1EXMPoCJklADKiBmqgt68mALS8t3YU5ALMA5gFiQA2U+ufkXQOY/QGXA2JQu4CJEZR41ECpvkfeNWBLIfYuzAE2Z2NqwOaWxq4BXAJ0ODHQ/kyra8BeD2iHLM0d+SptlqvcnLWbAVZQLlp7CbRc5bTmXOW11uriRdduBnBhTVytzhkCw5j+r/Q2Vj1fram6J1/VY7mDATaRN2nvNSuXr1awjXNe732uNT/fqw8GQPSK5IVaXbyeK0MYwxggjp5tTbex158MUNE22Fj16IpghAPiSN8eA9mVARGhHqeX+NLHbHtnhIPpmA+Ibb+NXQNooBEQ24apOCIswpm6o1Sb+wIMBsxtLomZm28xx+N6uVxLzhkMgJQXyOWY4kzVWs7JuWvvkwFrXxQ9n2kPMP0BhjFADKiB/Ly5L8BgwNzmXATCAEIBwgExoAbyvj33gwF7CsjvZugCeV57akB7u2IuwGyA+YAYUAO258oA5n5AIyAGtqkUIwzMrZf61sxfGbDmZZy9JjAflO6gBmz9ygAIQCRioP3Z1isDzvaAted5MKDm0Nnr7jvg6e99/97DGc0YGaCHLj1orV7qO3J+ZICEfu7zX7h4UP1Mq2sAD/jeu++wDLDxkDjRj6IBPCMPDojPimQAv9885Et/+fPdm2+8cXn8+H22A4jJUSMhLvGtIxnAg/CAT3792/fEHqjB8Wq3mhsZcKsPsUR3MqDllW3hLhG3RW8yQJe98vLf7hTn61Qt597K/soAK5x/+QGbO1s8aUCPhz36GR8BAAD//5CO9ZoAAAAGSURBVAMA7k50Mw5FIEsAAAAASUVORK5CYII=","you-e":"data:image/png;base64,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","you-f":"data:image/png;base64,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"}, PROPS='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAeCAYAAABuUU38AAACyElEQVR4AeyYP2gUQRTGZ60sxRQeioqgBFIICVrYaSN4SjwOCXJYHCJB1EYLQUFElNhZRQsRSSGHhQQFPZuApaBFwEIIiiRiQA8S4bgi3STfsG94+3Ym2d3sJCkS8tv3d2bed3vccbtDFfwbGDqpCy4NsqywkCDTrLFp9d4l++JxH8sSQs5euKwJFH0MDRzTO5d6CtbXU3aeBocF2J8sfCsEApAgZEx5ObyMqS+PvftoXBOudXxgWaeaFUINiwsL5Kasb2hfPrVBhkS13rRvH2pvP3wVkS8t1VJCdvf1mV6XoPbYaeXDLAp4wcBg/vsfBUvQkVbIhzcvE6o/f3qXiLGgUhuLfKBeBu3JidS52Hfiek2Dm5VdCpZADVghCCCGQFyUg4eP6tXg+zau3NKzs78UgZjXye/87ykXVE8IoeR67d79h8wWPmuK8aX14kkkiUsJc7s1lbpTPBdECN6Wcz+/RT6bmDBHMNfpKg5fGkQIP6BM/+nUl4jD9w4qpNG8aj9Kuc8HKMvPLeT+43Htgw/1ul7Xw92OggXk8x7yZ95e0wTlXPbEqfOakHUrJMtwtHh6+qtxpTXJ+NIdHlEu4rI1EGCDFUfGKynzDwHGiS+IQRwqKwQJDMZBzsXg4HGTltYk2eV9+6PisFIulw8sF1ItIYQGQzP3EUse3LkRSWRP3vjHzO+8S2x/QgiyEADgu6DhXTWZO1c9oziyjri/9sx+PxzpP6B4jDrAx/hqoMcKoQGlRVMRRpsXIxeuvTA84apnyVkhWZq3cs+2EMfd2dTU9h3Z1JffcXjwO0K/qR1nl5oKJmSjBNCrUUhIvTGqAW3isxspxgjBUD7kkOijHPcpRxYPB+CThR8SIwQH/Ps7ryTIFwUPB0YWewoWFN0n6zorZE9ln5Jk3cTVJx8UuHrKzBkhk63nkQ95mOyTdYr5b2v4lA9llwEAAP//O1C40wAAAAZJREFUAwBFLuDc+WDFmAAAAABJRU5ErkJggg==';
+[].forEach.call(document.querySelectorAll('.prop'),function(e){e.style.backgroundImage='url("'+PROPS+'")'});
+
+var panel=document.getElementById('panel');
+
+/* Fixed coordinates, never random: the panel renders the same room every boot. */
+var STARS=[[4,3],[11,7],[19,2],[26,10],[33,5],[41,8],[48,3],[52,12],[58,6],[65,9],[69,4],[15,12],[30,14],[44,13]];
+STARS.forEach(function(s,i){var e=document.createElement('i');e.className='star'+(i===2?' t1':i===9?' t2':'');
+  e.style.left='calc(var(--px) * '+s[0]+')';e.style.top='calc(var(--px) * '+s[1]+')';document.getElementById('sky').appendChild(e)});
+var DROPS=[3,8,13,18,22,27,31,36,40,45,49,54,58,63,67];
+DROPS.forEach(function(x,i){var e=document.createElement('i');e.className='drop';
+  e.style.left='calc(var(--px) * '+x+')';e.style.animationDelay=(i*137%900)+'ms';
+  e.style.top='calc(var(--px) * '+(i%3)+')';document.getElementById('sky').appendChild(e)});
+var BLDS=[[3,4],[2,6],[5,3],[3,7],[4,4],[2,5],[6,3],[3,6],[4,2],[2,5],[5,4],[3,7],[4,3],[2,4],[5,5],[3,2]];
+var CYC=[17,23,13,29,19,31,11,26,15,21,27,14,24,18,33,20];
+BLDS.forEach(function(b,i){var e=document.createElement('div');e.className='bld';
+  e.style.width='calc(var(--px) * '+b[0]+')';e.style.height='calc(var(--px) * '+b[1]+')';
+  if(b[1]>3){var w=document.createElement('i');w.className='win';w.dataset.cyc='';
+    w.style.setProperty('--wc',CYC[i]+'s');w.style.left='calc(var(--px) * 0.35)';w.style.top='calc(var(--px) * 0.7)';e.appendChild(w)}
+  if(b[1]>5){var w2=document.createElement('i');w2.className='win';w2.dataset.cyc='';
+    w2.style.setProperty('--wc',CYC[(i+7)%16]+'s');w2.style.right='calc(var(--px) * 0.35)';w2.style.top='calc(var(--px) * 2)';e.appendChild(w2)}
+  document.getElementById('skyline').appendChild(e)});
+
+
+var panel=document.getElementById('panel');
+
+/* ── STATE ──────────────────────────────────────────────────────────────────────
+   P     the last payload the server sent. null until the first frame arrives.
+   LINK  connection health. The CLIENT owns this, never the server: "offline" means
+         "I cannot hear the server", which by definition the server cannot tell me.
+   ACK   which meeting the user has already dealt with, held locally so a dismissed
+         hint does not come back on every payload tick. Keyed by meeting identity, so
+         the next meeting starts unacknowledged.
+   DBG   view-only debug overrides. Never touched by a payload.                     */
+var P=null, LINK='down', ACK=null, ACK_KEY=null, MSGS=[];
+var DBG={hour:null, ambient:'room', monitor:'on'};
+
+function clip(s,n){return s&&s.length>n?s.slice(0,n-1)+'\u2026':(s||'')}
+function pip(s){return '<span class="pip" data-s="'+s+'"></span>'}
+function todFor(h){return h<5?'night':h<8?'dawn':h<12?'morning':h<17?'midday':h<20?'dusk':'night'}
+function hourNow(){return DBG.hour!=null?DBG.hour:new Date().getHours()}
+
+/* ── STRIP ──────────────────────────────────────────────────────────────────────
+   Counts first, names second. The strip has a hard width and the meeting rail owns its
+   right end, so something has to give — and it must be the names: a truncated project
+   name is still a project you can peek at, whereas a dropped "3 working" is information
+   the panel simply stopped telling you.
+
+   Totals come from payload.counts when present, because payload.list may be truncated by
+   the server; names always come from list. counts covers EVERY live session including the
+   one named on line 1, so the primary's own state is subtracted here — the server should
+   not have to know how the strip is laid out.                                        */
+function rollup(p,maxNamed){
+  var list=p.list||[], primary=list[0], c=p.counts, rest=list.slice(1);
+  var wants=rest.filter(function(s){return s.state==='needs_input'||s.state==='awaiting'});
+  var busy = c&&c.working!=null
+    ? Math.max(0,c.working-((primary&&primary.state==='working')?1:0))
+    : rest.filter(function(s){return s.state==='working'}).length;
+  var parts=[], named=wants.slice(0,maxNamed), over=wants.length-named.length;
+  /* Urgency order, leftmost first: what wants you, then what is merely busy. The strip
+     carries the sessions line 1 did NOT name, so this is the order among the remainder. */
+  named.forEach(function(s){
+    parts.push({h:pip(s.state)+'<span>'+clip(s.name,16)+'</span>',pri:0})});
+  /* "+N" IS ONLY MEANINGFUL BESIDE A NAME. Once the rail has shed every name, "+1" has
+     nothing to be more than — it reads as "one more" of whatever sits next to it, which on
+     a shed strip is the working count, and that is not what it counts. With no names left
+     the overflow becomes a labelled count per state, which keeps both the number and the
+     shape-encoded pip: "1 needs you", not "+1". Wider than "+1" by a few characters, and
+     worth every one of them. */
+  if(over&&named.length)parts.push({h:'<span>+'+over+'</span>',pri:1});
+  else if(over){
+    var byState=[['needs_input','needs you'],['awaiting','your turn']];
+    byState.forEach(function(pair){
+      var n=wants.filter(function(s){return s.state===pair[0]}).length;
+      if(n)parts.push({h:pip(pair[0])+'<span>'+n+' '+pair[1]+'</span>',pri:1});
+    });
+  }
+  if(busy)parts.push({h:pip('working')+'<span>'+busy+' working</span>',pri:1});
+  if(!parts.length&&list.length)parts.push({h:pip(list[0].state)+'<span>'+list[0].state.replace('_',' ')+'</span>',pri:1});
+  if(!parts.length)parts.push({h:'<span>nothing running</span>',pri:1});
+  return parts;
+}
+/* True width of a group: the pip at its real size plus the text at its FULL width, which
+   scrollWidth still reports after overflow:hidden has clipped it. Measuring the flex box
+   itself always says it fits, because min-width:0 lets it satisfy any width. */
+function groupWidth(g){
+  var gap=parseFloat(getComputedStyle(g).gap)||0,w=0,n=0;
+  [].forEach.call(g.children,function(ch){w+= ch.classList.contains('pip')?ch.offsetWidth:ch.scrollWidth;n++});
+  return w+gap*Math.max(0,n-1);
+}
+/* The roll-up's budget is whatever the strip has left AFTER the rail has taken what it
+   needs — not a fixed share. Budgeting against .sl's own width means a name can never be
+   shed to make room for the rail, which is exactly backwards.
+
+   Shedding REBUILDS at a lower maxNamed instead of deleting a finished group, because a
+   dropped name has to reappear inside the overflow count. Splicing it out left "3 working
+   · +1" on a panel where two sessions wanted you — the count silently under-reported the
+   moment the thing next to it was removed. Rebuilding keeps the two in agreement by
+   construction. */
+/* ── IDEMPOTENCE ────────────────────────────────────────────────────────────────
+   THE RULE: rendering the same payload twice must produce no visible motion.
+
+   The contract requires a frame every 8-10s whether anything changed or not, so
+   render() runs constantly on an idle panel. Any once-only animation replayed per
+   render, or any element with an infinite animation recreated per render, turns the
+   heartbeat itself into visible motion. Three places had this: the stack fade, the
+   message drop, and the monitor bars (recreating an element restarts its animation
+   from frame 0, so the readout reset every 8s).
+
+   Every one of them is now gated on a signature of what it animates. If you add
+   another, gate it too — do not rely on the server only sending frames on change. */
+function once(el,sig,cls){
+  if(el.dataset.sig===sig)return;
+  el.dataset.sig=sig;
+  el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
+}
+
+/* The rail gets as much of the meeting name as the strip can afford. Session names shed
+   first — the established priority, since a truncated project name is still something
+   peek can show you in full — and only once the left side is down to counts alone does
+   the rail itself step down. */
+var RAIL_CHARS=[30,26,22,18,14];
+function drawRail(nx,chars){
+  /* "+N" counts ONLY meetings sharing this exact slot, never later ones — that is what makes
+     it read as "there is a clash here" rather than "there is more later", which the rail
+     already implies. Same shape as the all-day line and the session roll-up: name the first,
+     count the rest, let peek carry the names. Rotating them instead would make what you see
+     depend on when you look, which is the one thing a glance panel cannot afford. */
+  document.getElementById('stripR').innerHTML=nx
+    ?(nx.tomorrow?'tmr ':'')+'<b>'+nx.t+'</b> <span>'+clip(nx.name,chars)+'</span>'
+      +(nx.more?' <i>+'+nx.more+'</i>':'')
+    :'';
+}
+
+function fitStrip(build,maxNamed,nx){
+  var sl=document.getElementById('stripL'),sr=document.getElementById('stripR');
+  var strip=sl.parentNode,cs=getComputedStyle(strip);
+  var pad=parseFloat(cs.paddingLeft)+parseFloat(cs.paddingRight),outer=parseFloat(cs.gap)||0;
+  for(var ci=0;ci<RAIL_CHARS.length;ci++){
+    drawRail(nx,RAIL_CHARS[ci]);
+    var avail=strip.clientWidth-pad-(sr.offsetWidth?sr.offsetWidth+outer:0);
+    for(var n=maxNamed;n>=0;n--){
+      var parts=build(n);
+      sl.innerHTML=parts.map(function(p){return '<span class="grp'+(p.dim?' dim':'')+'">'+p.h+'</span>'})
+        .join('<span class="sep">\u00b7</span>');
+      var kids=[].slice.call(sl.children),gap=parseFloat(getComputedStyle(sl).gap)||0,sum=gap*Math.max(0,kids.length-1);
+      kids.forEach(function(k){sum+= k.classList.contains('sep')?k.offsetWidth:groupWidth(k)});
+      if(sum<=avail)return;
+    }
+  }
+  /* Rail at its shortest and counts only, still over: they stay, clipped. A clipped
+     count is recoverable by peeking; a removed one is not. */
+}
+
+var MSG_SIG=null;
+function drawMsgs(){
+  var el=document.getElementById('msgs');
+  var sig=MSGS.slice(-2).join(',');
+  if(sig===MSG_SIG)return;          /* idempotence: rebuilding replays the drop-in */
+  MSG_SIG=sig;
+  el.innerHTML=MSGS.slice(-2).map(function(m,n){
+    return '<div class="prop msg '+(m==='teams'?'p-bub':'p-env')+'" style="left:calc(var(--px) * '+(n*8)+')"></div>'}).join('');
+  [].forEach.call(el.querySelectorAll('.prop'),function(e){e.style.backgroundImage='url("'+PROPS+'")'});
+}
+
+/* ── MONITOR ────────────────────────────────────────────────────────────────────
+   One bar per live session, coloured by state: six running with one waving is a
+   silhouette, not a list. Bar COUNT follows payload.sessions, which may exceed the
+   named list — the server sends names for the ones worth naming and a total for the
+   rest, and the monitor is the one place the total has to be honest.               */
+var BARC={needs_input:['var(--accent-amber)',4],awaiting:['var(--accent-blue)',2],working:['var(--accent-green)',null],idle:['var(--accent-neutral)',1]};
+var BAR_SIG=null;
+function drawBars(p,off,meeting){
+  var scr=document.getElementById('monScr');
+  var list=p.list||[], n=Math.min(p.sessions!=null?p.sessions:list.length,6);
+  var bars=[];
+  for(var i=0;i<n;i++)bars.push(list[i]||{state:'working'});
+  if(!bars.length)bars=[{state:'idle'}];
+  /* Idempotence, and the sharpest case of it: these bars carry INFINITE animations, so
+     recreating them on an unchanged frame restarts every one from frame 0 and the whole
+     readout visibly resets on the heartbeat. Signature first, DOM second. */
+  var sig=(meeting?1:0)+'|'+(off?1:0)+'|'+bars.map(function(s){return s.state}).join(',');
+  if(sig===BAR_SIG)return;
+  BAR_SIG=sig;
+  [].forEach.call(scr.querySelectorAll('.mon-bar'),function(e){e.remove()});
+  if(meeting)return;   /* the calendar has the screen; one readout at a time */
+  bars.forEach(function(s,i){
+    var c=BARC[s.state]||BARC.working,e=document.createElement('span');
+    e.className='mon-bar'+(i%2?' odd':'');e.dataset.s=off?'off':s.state;
+    e.style.left='calc(var(--px) * '+(i*1.6+.4)+')';
+    e.style.background=off?'var(--text-dim)':c[0];
+    e.style.opacity=off?'.3':'.62';
+    if(c[1]!==null||off)e.style.height='calc(var(--px) * '+(off?1:c[1])+')';
+    scr.appendChild(e)});
+}
+
+/* ── PEEK HINT ────────────────────────────────────────────────────────────── */
+/* ── THE PEEK HINT ────────────────────────────────────────────────────────────────
+   The other two hotkey hints fire when the thing they teach is ACTIONABLE RIGHT NOW —
+   dismiss at T-5, acknowledge while late. Peek has no such moment: it is always available
+   and never refused, which is exactly why it was undiscoverable. But it does have a moment
+   when it is demonstrably USEFUL: when the panel is visibly withholding something. So the
+   hint fires then, and it teaches by demonstration — it displaces the very summary it is
+   telling you how to expand.
+
+   Three guards keep it from becoming the clutter this system exists to avoid:
+     • only when peek would show more than the strip does (never on an idle panel, where
+       the hint would be a lie about there being something to see);
+     • never during a meeting, offline, or while the server is already using the strip —
+       those hints are time-critical and this one never is;
+     • at most once per 12h of uptime. A reboot re-arms it, which is right: a reboot is
+       also when someone new is most likely meeting this panel.
+   Six seconds, the same as the others. Client-owned, like peek itself — the server cannot
+   know whether the user has learned a client gesture. */
+var PEEK_HINT='CTRL+OPT+CMD+D to see everything';
+var PEEK_HINT_ARMED=Date.now()+6e4;   /* a minute of settling first: never on the first frame */
+var PEEK_HINT_SHOWN=0, PEEK_HINT_EVERY=432e5, PEEK_HINT_FOR=6000;
+function peekHint(p,off,kind){
+  var now=Date.now();
+  if(now-PEEK_HINT_SHOWN<PEEK_HINT_FOR)return true;          /* still inside the 6s window */
+  if(off||kind==='meeting'||p.strip||panel.dataset.peek==='true')return false;
+  if(now<PEEK_HINT_ARMED||now-PEEK_HINT_SHOWN<PEEK_HINT_EVERY&&PEEK_HINT_SHOWN)return false;
+  var holds=(p.list||[]).length>1||(p.agenda||[]).length>1||(p.allDay||[]).length>0;
+  if(!holds)return false;
+  PEEK_HINT_SHOWN=now;
+  setTimeout(render,PEEK_HINT_FOR+50);                       /* retire it without waiting for a frame */
+  return true;
+}
+
+/* ── SOURCE TAG ──────────────────────────────────────────────────────────────── */
+/* THE UNMARKED SOURCE IS NAMED BY THE SERVER, never assumed. payload.defaultSource is a
+   config label on that side: hardcoding 'work' here means renaming it to "office" or
+   "work-alt" silently tags every row, inverting the rule the tag exists for. Absent field
+   means NO tags at all — losing an affordance is safer than printing a wrong one, and it is
+   how absent weather and offline already behave. Lowercased and capped because the panel must
+   never print an unbounded server string into a fixed box: that is the same constraint every
+   other text surface here obeys, and a raw config label is exactly the string that breaks it. */
+function srcTag(src,def){
+  if(!def||!src||src===def)return '';
+  return '<em>'+clip(String(src).toLowerCase(),10)+'</em>';
+}
+
+/* ── PEEK ───────────────────────────────────────────────────────────────────────
+   The release valve, not a dashboard: four named sessions and three upcoming meetings
+   is the whole budget. Past four it counts, exactly like the strip does. Each column
+   floors at one row, so an empty peek is never a blank rectangle — and that floor is
+   what puts a two-row minimum under the duration below.                             */
+var PEEK_ROWS=6;
+function drawPeek(p){
+  var pk=p.peek||{}, list=pk.list||p.list||[], ag=pk.agenda||p.agenda||[];
+  var shown=list.slice(0,4);
+  var rows=shown.map(function(s){
+    return '<div class="prow">'+pip(s.state)+'<span>'+clip(s.name,24)+'</span><em>'+(s.tool||String(s.state).replace('_',' '))+'</em></div>'}).join('');
+  /* Count from what was SHOWN, not from a hard-coded four: a payload whose peek list is
+     shorter than the budget (server truncated it, or peek.list is a custom subset) would
+     otherwise under-report by exactly the difference. */
+  var total=p.sessions!=null?p.sessions:list.length;
+  if(total>shown.length)rows+='<div class="prow"><span style="color:var(--text-muted)">+'+(total-shown.length)+' more</span></div>';
+  if(!list.length)rows='<div class="prow"><span>nothing running</span></div>';
+  /* The right column holds a heading + 4 rows. That is geometry, not preference: the peek
+     box is pinned between the desk line and the strip, so the cap comes from the box.
+     Timed rows win the budget — a meeting that is about to start outranks a birthday — and
+     any all-day events that do not fit collapse into a +N on the last one shown, exactly as
+     the window handles them. Deriving both from RCOL_ROWS is what stops duration and
+     capacity drifting apart again. */
+  var RCOL_ROWS=4;
+  var rest=ag.slice(0,3), timedRows=Math.max(rest.length,1);
+  var all=pk.allDay||p.allDay||[], ad=all.slice(0,Math.max(0,RCOL_ROWS-timedRows));
+  var more=all.length-ad.length;
+  /* All-day sits above the timed rows, labelled in the time slot rather than under a second
+     heading — a heading would cost one of the four rows. */
+  var adr=ad.map(function(a,i){
+    var n=clip(a.summary,16)+(more&&i===ad.length-1?'  +'+more:'');
+    return '<div class="prow ag"><b class="ad">all day</b><span>'+n+'</span></div>'}).join('');
+  var agr=adr+(rest.map(function(a){
+    /* Source is IDENTIFICATION, not priority: it may not change loudness, order or hue
+       (accents encode state — spending one on source breaks that globally). It lands in peek's
+       right-hand slot, the same slot the session rows use for the tool, so the eye already
+       reads that position as "what kind of thing is this". Only the minority is marked: the
+       default source is unmarked, and a tag on every row is a tag on none. */
+    return '<div class="prow ag"><b>'+a.t+'</b><span>'+clip(a.name,28)+'</span>'
+      +srcTag(a.source,p.defaultSource)+'</div>'}).join('')
+    || '<div class="prow ag"><span style="color:var(--text-dim)">nothing after this</span></div>');
+  PEEK_ROWS=Math.max(shown.length+(total>shown.length?1:0),1)+ad.length+timedRows;
+  document.getElementById('peek').innerHTML=
+    '<div class="pcol left">'+rows+'</div>'+
+    '<div class="pcol right"><div class="phead">upcoming</div>'+agr+'</div>';
+}
+
+/* ── RENDER ─────────────────────────────────────────────────────────────────────
+   Every art decision is a data-* attribute on the root plus a CSS selector. The only
+   branch in here is offline, which is the client's own state.                       */
+var WAS_STARTED=false;
+function render(){
+  var p=P||{}, off=LINK!=='up'||!P;
+  /* OFFLINE GATES THE DATA, NOT THE ELEMENTS. One assignment empties everything the server
+     owns — sessions, counts, agenda, all-day, weather, peek, messages — so the window, the
+     strip, the rail, the monitor bars and peek cannot disagree about what is known. Guarding
+     each surface instead means an `off &&` on every one of them, and the one you forget is
+     the one that paints a live-looking meeting beside the word OFFLINE.
+     Kept: the mascot (a config, not a state — swapping the character on disconnect would
+     read as a second failure) and the clock, which this client computes itself.
+     Messages go too, deliberately. An unread count feels monotonic — mail does not
+     un-arrive — but he may have cleared it on his phone during the outage, and one
+     exception to a uniform rule is how this drift started. */
+  if(off){p={mascot:p.mascot}; MSGS=[];}
+  document.getElementById('l0').classList.remove('refuse');
+
+  var esc=p.escalation||0, started=esc>=1;
+  /* FORCE-EXIT IS EDGE-TRIGGERED. A meeting REACHING its start closes an open peek;
+     being inside that window does not keep peek shut. Level-triggered, this and "a
+     refusal falls through to peek" cancel exactly — the key opens peek and the same tick
+     kills it. The edge keeps both: an unattended peek dies the moment the meeting lands,
+     and a peek opened deliberately afterwards survives its duration. */
+  if(started&&!WAS_STARTED&&panel.dataset.peek==='true'){PEEK_KILLED=true;closePeek();setPeek(false)}
+  WAS_STARTED=started;
+
+  /* Server-driven peek. Absent field = closed, which also means an offline frame closes it:
+     a peek held open over data the panel no longer trusts is worse than no peek.
+     PEEK_KILLED holds the force-exit above against a server still sending the field, and
+     clears when the server itself drops it. The server should drop `peek` when a meeting
+     starts; this is the client refusing to depend on that. */
+  var pk=p.peek;
+  if(pk&&pk.secondsLeft!=null){
+    SERVER_PEEK=true;
+    if(!PEEK_KILLED)openPeek(Math.max(1,pk.secondsLeft)*1000);
+  }else{
+    PEEK_KILLED=false;
+    if(SERVER_PEEK&&panel.dataset.peek==='true')closePeek();
+  }
+
+  /* A new meeting clears the old acknowledgement — identity is name plus tier, so an
+     escalating meeting re-asks once per tier rather than staying silent for its hour. */
+  var mtg=p.meeting||null;
+  /* The server may emit .summary instead of .name (both are in circulation — the text-only
+     fallback build reads .summary). Normalise once here rather than at each read: the ack
+     key, the agenda filter and sendAck all take .name, and a missing one silently produced
+     an unfilterable agenda row rather than an error. */
+  if(mtg&&mtg.name==null)mtg.name=mtg.summary||'';
+  var key=mtg?mtg.name+'#'+esc:null;
+  if(key!==ACK_KEY){ACK_KEY=key;ACK=null}
+
+  var lines=p.lines||[], kind=off?'offline':(p.kind||'idle');
+  var pose=off?'offline'
+    :kind==='meeting'?(esc>=3?'late_3':esc===2?'late_2':esc===1?'late_1':p.locked?'meeting_locked':'meeting')
+    :kind;
+  var hour=hourNow(), tod=todFor(hour), wx=(p.weather&&p.weather.condition)||'clear';
+
+  panel.dataset.pose=pose;
+  panel.dataset.accent=off?'neutral':(p.accent||'neutral');
+  panel.dataset.locked=p.locked?'true':'false';
+  panel.dataset.offline=off?'true':'false';
+  panel.dataset.source=kind==='meeting'?'calendar':'claude';
+  panel.dataset.tod=tod; panel.dataset.wx=wx;
+  panel.dataset.ambient=DBG.ambient; panel.dataset.monitor=DBG.monitor;
+  panel.dataset.stars=(tod==='night'||tod==='dusk')&&wx==='clear'?'on':'off';
+  panel.dataset.screenLabel=off?'offline':(p.label||kind);
+
+  document.getElementById('l0').textContent=off?'OFFLINE':(lines[0]||'');
+  document.getElementById('l1').textContent=off?'':clip(lines[1]||'',28);
+  /* Line 2 stays EMPTY offline. "server unreachable" belongs in the strip, with every other
+     piece of machine vocabulary ("nothing running", the dismiss hint) — printing it here as
+     well put the same four words in two type sizes one above the other, which is exactly the
+     filler the content rules exist to prevent. */
+  document.getElementById('l2').textContent=off?'':(lines[2]||'');
+
+  /* The rail is NEXT, so it must never contain the meeting currently shouting from line 0
+     — a panel reading LATE 5m over "14:30 Design review" says the thing you are late to
+     has not started. The server should already exclude it; this is the backstop. */
+  var ag=(p.agenda||[]).filter(function(a){return !mtg||a.name!==mtg.name});
+  /* THE RAIL YIELDS TO A MEETING THAT HAS SEIZED THE PANEL. Being told about 09:00 while you
+     are five minutes late for 08:00 is the panel talking past you — and the escalation ladder
+     exists to make one thing unavoidable, which a second meeting beside it quietly undoes.
+     Only LOCKED or STARTED suppresses it: at T-5 you are not late yet, so the next meeting is
+     still context. Acknowledging releases it; a locked meeting cannot be acknowledged, so it
+     stays suppressed until the server drops it — correct, since that is precisely the window
+     where nothing else matters. */
+  var seized=kind==='meeting'&&ACK!=='dismissed'&&
+    (!!p.locked||(mtg&&mtg.startsInSec!=null&&mtg.startsInSec<=0));
+  var nx=(ag[0]&&!seized)?{t:ag[0].t,name:ag[0].name,tomorrow:ag[0].tomorrow,
+    more:ag.filter(function(a){return a.t===ag[0].t&&!!a.tomorrow===!!ag[0].tomorrow}).length-1}:null;
+
+  /* A dismissed meeting drops its hint and dims behind the veil; it is still counting
+     down. An acknowledged one just dims. Either way the key visibly did something, which
+     is the only reason a refusal can fall through to peek on the next press. */
+  var hint=off?'server unreachable':(ACK?null:p.strip);
+  if(!hint&&peekHint(p,off,kind))hint=PEEK_HINT;
+  var build=function(n){
+    var parts=hint?[{h:'<span>'+hint+'</span>',pri:1,dim:off||!!p.stripDim}]:rollup(p,n);
+    if(MSGS.length)parts.push({h:'<span>'+MSGS.length+' unread</span>',pri:1});
+    return parts;
+  };
+  document.getElementById('veil').hidden=!(kind==='meeting'&&ACK==='dismissed');
+  fitStrip(build,nx?1:2,nx);
+
+  /* ── weather. Absent payload.weather hides the block rather than inventing a reading:
+     the panel has no network of its own and must never appear to know something it does
+     not. The clock is the client's, and stays. */
+  document.getElementById('wxTime').textContent=String(hour).padStart(2,'0')+':'+String(new Date().getMinutes()).padStart(2,'0');
+  var w=p.weather;
+  document.getElementById('wxNow').textContent=(w&&w.temp!=null)?w.temp+'\u00b0':'';
+  var wn=document.getElementById('wxNext');
+  if(!off&&w&&w.next){
+    if(w.next.storm){wn.textContent='\u26a1 storm '+w.next.at;wn.dataset.storm=''}
+    else{var d=w.next.temp-w.temp;
+      wn.textContent=(d>0?'\u2197 ':d<0?'\u2198 ':'\u2192 ')+w.next.temp+'\u00b0 '+w.next.at;
+      delete wn.dataset.storm}
+  }else{wn.textContent='';delete wn.dataset.storm}
+  /* One line, the first event; the rest expand in peek. A second line here would start a
+     list in the calmest corner of the panel, which is the one place a list must never be. */
+  /* The weather block is right-anchored and line 1 grows toward it, so an unbounded string
+     here will eventually collide with a long session title. The block is capped and the name
+     ellipsises inside it — line 1 wins that contest, because it is the one carrying state. */
+  /* Offline hides every value the server owns — temperature, forecast, all-day — and keeps
+     the clock, which the client computes itself and is therefore the only one still true.
+     A confidently stale temperature is the failure the watchdog exists to prevent; it would
+     be incoherent to paint one right beside the word OFFLINE. */
+  var ad=p.allDay||[];
+  document.getElementById('wxNow').hidden=!w;
+  document.getElementById('wxNext').hidden=!w;
+  document.getElementById('wxDay').hidden=!ad.length;
+  document.getElementById('wxDayName').textContent=ad.length?ad[0].summary:'';
+  document.getElementById('wxDayMore').textContent=ad.length>1?'+'+(ad.length-1):'';
+  /* No hiding needed: both readings self-empty when the payload carries no weather, and
+     the clock stays either way. The clock is the client's own — losing the server does not
+     make the panel stop knowing the time, and a blank sky corner would look broken. */
+
+  drawBars(p,off,kind==='meeting');
+  drawPeek(p);
+  MSGS=p.messages||MSGS; drawMsgs();
+  document.getElementById('mascot').style.backgroundImage='url("'+(SHEETS[p.mascot]||SHEETS['you-f'])+'")';
+  var s=document.getElementById('stack');
+  once(s,s.textContent+'|'+(p.accent||'')+'|'+kind+'|'+(p.locked?1:0),'swap');
+}
+
+/* ── PEEK TIMING ────────────────────────────────────────────────────────────────
+   The panel's only input is a global shortcut, which fires on key-down and has no
+   key-up, so peek cannot be a hold. What the hold protected was never the gesture: it
+   was the guarantee that the panel CANNOT BE LEFT AS A LIST. A plain toggle loses that.
+   The timer keeps it — the panel always returns to a glance on its own.
+
+   Duration is 2s to notice the list arrived plus 1s per row to read it, capped at 8s.
+   The drain gets one step per second, so the hairline reads as a countdown at any
+   length, and never tweens.                                                         */
+var PEEK_CAP=8000, peekTimer=null;
+
+/* PEEK IS THE SERVER'S. On the hardware the Electron window is focusable:false so it can
+   never steal focus from the terminal, and the hotkey is a globalShortcut captured outside
+   the browser context entirely — no keydown ever reaches this page. Everything below that
+   listens for one is unreachable there. So the server arbitrates and says so in the
+   payload: `peek` present means peek is OPEN, `peek.secondsLeft` is how long it has.
+   That also restores invariant 1 — the server owns arbitration — which a local key ladder
+   quietly duplicated. pressKey() stays because it is the only input the browser kit has,
+   but it is the fallback path, never the authority.
+
+   openPeek is idempotent by the same rule as everything else: re-arming the drain on each
+   frame would make the heartbeat visible as a hairline that never finishes draining. */
+var SERVER_PEEK=false, PEEK_KILLED=false;
+function openPeek(ms){
+  if(panel.dataset.peek==='true')return;   /* already open — never re-arm the drain */
+  clearTimeout(peekTimer); peekTimer=null; /* the server owns the close, not a local timer */
+  panel.dataset.peek='true';
+  var b=document.getElementById('peekbar');
+  b.style.animation='none'; void b.offsetWidth;
+  b.style.animation='drain '+ms+'ms steps('+Math.max(1,Math.round(ms/1000))+') both';
+}
+function closePeek(){clearTimeout(peekTimer);peekTimer=null;panel.dataset.peek='false'}
+function peekMs(){return Math.min(PEEK_CAP,2000+1000*PEEK_ROWS)}
+function setPeek(on){
+  if(SERVER_PEEK)return;   /* this panel's peek is server-driven; ignore the local ladder */
+  if(on===undefined)on=panel.dataset.peek!=='true';
+  clearTimeout(peekTimer);
+  panel.dataset.peek=on?'true':'false';
+  if(!on)return;
+  var ms=peekMs(),b=document.getElementById('peekbar');
+  b.style.animation='none';void b.offsetWidth;
+  b.style.animation='drain '+ms+'ms steps('+Math.round(ms/1000)+') both';
+  peekTimer=setTimeout(function(){setPeek(false)},ms);
+}
+
+/* ── THE ONE KEY, IN PRIORITY ORDER ─────────────────────────────────────────────
+     1  peek is open        -> close peek
+     2  meeting actionable  -> dismiss / acknowledge
+     3  otherwise           -> open peek
+   Rule 1 outranks rule 2 on purpose: acting on something a list is covering is how a
+   device loses trust, and it costs at most one extra press. It is safe only because
+   force-exit is edge-triggered above — a started meeting closes peek before the key is
+   consulted, so rule 1 can never shield one. The two are a pair. */
+function pressKey(){
+  var p=P||{}, esc=p.escalation||0, started=esc>=1;
+  if(panel.dataset.peek==='true'){setPeek(false);return 'closed peek'}
+  if(p.kind==='meeting'&&!ACK){
+    /* Locked means the meeting cannot be dismissed — that is the entire content of the
+       lock. The key refuses with a visible beat, and the refusal COUNTS: the next press
+       falls through to peek. A lock that also blocked peek would punish you for having
+       been told no. */
+    if(p.locked&&!started){ACK='refused';beat();return 'refused'}
+    ACK=started?'acknowledged':'dismissed';
+    sendAck(ACK); render(); return ACK;
+  }
+  setPeek(true); return 'opened peek';
+}
+/* The beat must hand the line back. It wins with !important while it runs, so if the class
+   outlives the animation it permanently outranks the locked countdown's breath — on this
+   meeting and every later one. Cleared on animationend, and again at the top of render(). */
+function beat(){var e=document.getElementById('l0');
+  e.classList.remove('refuse');void e.offsetWidth;e.classList.add('refuse');
+  e.addEventListener('animationend',function(){e.classList.remove('refuse')},{once:true})}
+
+/* Best-effort only. The acknowledgement is applied locally first so the panel feels
+   instant, and the next payload is still authoritative — if the server disagrees, the
+   server wins. A 404 here is harmless: the panel simply keeps its local ack. */
+function sendAck(kind){
+  try{fetch(ORIGIN+'/ack',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({kind:kind,meeting:(P&&P.meeting&&P.meeting.name)||null})}).catch(function(){})}catch(e){}
+}
+
+/* ── THE FEED ───────────────────────────────────────────────────────────────────
+   The server is the source of truth for everything except the connection itself.
+
+   Two independent failures have to be caught, and only one of them is an error event:
+   the socket dropping (onerror) and the socket staying open while the server goes quiet.
+   The second is the dangerous one — an always-on panel showing confidently stale state is
+   worse than one admitting it is offline — so a watchdog treats silence as a disconnect.
+   The server should send at least one frame every 10s, a heartbeat if nothing changed. */
+var ORIGIN='http://127.0.0.1:7777';
+var STALE_MS=30000, RETRY_MIN=1000, RETRY_MAX=15000;
+var es=null, retry=RETRY_MIN, staleTimer=null, retryTimer=null;
+
+function down(){if(LINK!=='down'){LINK='down';render()}}
+function armWatchdog(){clearTimeout(staleTimer);staleTimer=setTimeout(function(){
+  /* Open but silent. Tear the socket down and start over rather than trusting it. */
+  if(es){es.close();es=null}
+  down();schedule();
+},STALE_MS)}
+function schedule(){clearTimeout(retryTimer);retryTimer=setTimeout(connect,retry);
+  retry=Math.min(retry*2,RETRY_MAX)}
+function connect(){
+  if(es)return;
+  try{es=new EventSource(ORIGIN+'/events')}catch(e){down();schedule();return}
+  es.onopen=function(){retry=RETRY_MIN;armWatchdog()};
+  es.onmessage=function(ev){
+    var next;
+    try{next=JSON.parse(ev.data)}catch(e){return}   /* a malformed frame is not a disconnect */
+    if(next&&next.heartbeat){armWatchdog();return}
+    P=next;LINK='up';retry=RETRY_MIN;armWatchdog();render();
+  };
+  /* EventSource retries by itself on some failures and gives up on others, and the two are
+     not reliably distinguishable across runtimes. Rather than guess, always tear down and
+     reconnect on our own backoff — deterministic beats clever for something that has to
+     survive unattended for weeks. */
+  es.onerror=function(){if(es){es.close();es=null}clearTimeout(staleTimer);down();schedule()};
+}
+
+/* ── INPUT ──────────────────────────────────────────────────────────────────────
+   P is the real hotkey, forwarded by the shell's global shortcut. The rest are debug
+   overrides for bringing a panel up on a bench: they change the VIEW only and no payload
+   ever touches them. Safe to leave in — the device has no keyboard. */
+addEventListener('keydown',function(e){var k=e.key.toLowerCase();
+  if(k==='p'){pressKey();return}
+  if(k==='m'){DBG.monitor=DBG.monitor==='on'?'off':'on';render();return}
+  if(k==='n'){DBG.ambient=DBG.ambient==='night'?'room':'night';render();return}
+  if(e.key==='['){DBG.hour=(hourNow()+23)%24;render();return}
+  if(e.key===']'){DBG.hour=(hourNow()+1)%24;render();return}
+  if(k==='r'){DBG.hour=null;render()}          /* back to the real clock */
+});
+
+setInterval(function(){if(!P||LINK!=='up')return;render()},15000);  /* the clock ticks */
+render();      /* offline until the first frame — the honest boot state */
+connect();
+
+</script>
+</body></html>

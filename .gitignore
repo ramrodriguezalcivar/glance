@@ -1,0 +1,11 @@
+# Your configuration. Contains calendar URLs (which are read credentials) and
+# your coordinates. Never commit this.
+glance.env
+
+# Runtime
+logs/
+node_modules/
+*.log
+
+# macOS
+.DS_Store
