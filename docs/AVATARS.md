@@ -9,8 +9,7 @@ without touching a line of code.
 | `you-a` `you-b` `you-c` | three looks off one body |
 | `you-d` `you-e` `you-f` | three more, distinct silhouettes |
 
-`you-f` is the default — highest hair/skin contrast, so it resolves soonest at
-30 inches. Pick another with `GLANCE_MASCOT="you-b"` in `glance.env`.
+`you-a` is the default. Pick another with `GLANCE_MASCOT="you-b"` in `glance.env`.
 
 The ids are deliberately neutral. Naming them would mean naming *people*, and
 any name assigns a gender, a language and an ethnicity to a figure meant to be

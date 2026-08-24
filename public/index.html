@@ -46,7 +46,7 @@
     "weather":   {"temp":14,"condition":"clear"|"cloudy"|"rain"|"snow",
                   "next":{"at":"00:00","temp":18,"storm":false}} | null,
     "messages":  ["outlook","teams"],    // optional; desk objects, never a state
-    "mascot":    "you-a"                 // optional; you-a .. you-f (default you-f)
+    "mascot":    "you-a"                 // optional; you-a .. you-f (default you-a)
   }
 
   Send a frame on every change AND at least every 10s. A quiet socket is treated as a dead
@@ -832,7 +832,7 @@ function render(){
   drawBars(p,off,kind==='meeting');
   drawPeek(p);
   MSGS=p.messages||MSGS; drawMsgs();
-  document.getElementById('mascot').style.backgroundImage='url("'+(SHEETS[p.mascot]||SHEETS['you-f'])+'")';
+  document.getElementById('mascot').style.backgroundImage='url("'+(SHEETS[p.mascot]||SHEETS['you-a'])+'")';
   var s=document.getElementById('stack');
   once(s,s.textContent+'|'+(p.accent||'')+'|'+kind+'|'+(p.locked?1:0),'swap');
 }
