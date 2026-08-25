@@ -8,9 +8,9 @@ at it; you never study it.
 
 ![the full ladder, from idle to a meeting starting](docs/demo.gif)
 
-*The whole ladder in 20 seconds: idle, working, needing you, the peek overlay,
-then a meeting closing in until the panel locks — and stands down when you
-acknowledge it.*
+*The whole ladder: idle, working, needing you, the peek overlay, then a meeting
+closing in — T-5, a T-2 lock, and three tiers of increasingly hard-to-ignore
+late — until you acknowledge it and it stands down.*
 
 ## What it does
 
