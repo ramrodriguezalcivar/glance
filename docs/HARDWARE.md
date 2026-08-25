@@ -4,6 +4,14 @@ Glance needs a second display and nothing else. There is no SDK, no firmware,
 no driver — macOS treats the panel as an ordinary monitor and the app pins a
 window to it. That is deliberate: it means almost any screen works.
 
+## You may already own one
+
+Before buying anything: some docks, drive enclosures and keyboards now ship with
+a small display on the front that goes unused. If one of those is on your desk
+already, it is very likely a plain second display to the OS, and it will work.
+That is what the author's own panel is — a 1280x720 screen built into a
+Thunderbolt 5 SSD enclosure, bought for the storage, not the screen.
+
 ## Choosing a screen
 
 | | what to look for |
