@@ -1,6 +1,11 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Glance</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- The page is inline-only and talks to nobody but its own server, so it can say so.
+     script-src must keep 'unsafe-inline' (the whole app is one inline script), so this does
+     not stop injected handlers from running - what it stops is an injected handler reaching
+     the network, which is the part that turns a defaced panel into a data leak. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <!--
   Glance panel. Save as public/index.html.
 
@@ -440,7 +445,13 @@ var P=null, LINK='down', ACK=null, ACK_KEY=null, MSGS=[];
 var DBG={hour:null, ambient:'room', monitor:'on'};
 
 function clip(s,n){return s&&s.length>n?s.slice(0,n-1)+'\u2026':(s||'')}
-function pip(s){return '<span class="pip" data-s="'+s+'"></span>'}
+/* Session titles, meeting names and tool names are all attacker-influenced: anyone who can
+   put an event on a calendar this panel reads controls a string that ends up in innerHTML.
+   Escape at every HTML sink. clip() itself must NOT escape - its result also feeds
+   textContent, which would then show the entities literally. */
+var ESC={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ESC[c]})}
+function pip(s){return '<span class="pip" data-s="'+esc(s)+'"></span>'}
 function todFor(h){return h<5?'night':h<8?'dawn':h<12?'morning':h<17?'midday':h<20?'dusk':'night'}
 function hourNow(){return DBG.hour!=null?DBG.hour:new Date().getHours()}
 
@@ -464,7 +475,7 @@ function rollup(p,maxNamed){
   /* Urgency order, leftmost first: what wants you, then what is merely busy. The strip
      carries the sessions line 1 did NOT name, so this is the order among the remainder. */
   named.forEach(function(s){
-    parts.push({h:pip(s.state)+'<span>'+clip(s.name,16)+'</span>',pri:0})});
+    parts.push({h:pip(s.state)+'<span>'+esc(clip(s.name,16))+'</span>',pri:0})});
   /* "+N" IS ONLY MEANINGFUL BESIDE A NAME. Once the rail has shed every name, "+1" has
      nothing to be more than — it reads as "one more" of whatever sits next to it, which on
      a shed strip is the working count, and that is not what it counts. With no names left
@@ -531,7 +542,7 @@ function drawRail(nx,chars){
      count the rest, let peek carry the names. Rotating them instead would make what you see
      depend on when you look, which is the one thing a glance panel cannot afford. */
   document.getElementById('stripR').innerHTML=nx
-    ?(nx.tomorrow?'tmr ':'')+'<b>'+nx.t+'</b> <span>'+clip(nx.name,chars)+'</span>'
+    ?(nx.tomorrow?'tmr ':'')+'<b>'+esc(nx.t)+'</b> <span>'+esc(clip(nx.name,chars))+'</span>'
       +(nx.more?' <i>+'+nx.more+'</i>':'')
     :'';
 }
@@ -641,7 +652,7 @@ function peekHint(p,off,kind){
    other text surface here obeys, and a raw config label is exactly the string that breaks it. */
 function srcTag(src,def){
   if(!def||!src||src===def)return '';
-  return '<em>'+clip(String(src).toLowerCase(),10)+'</em>';
+  return '<em>'+esc(clip(String(src).toLowerCase(),10))+'</em>';
 }
 
 /* ── PEEK ───────────────────────────────────────────────────────────────────────
@@ -654,7 +665,7 @@ function drawPeek(p){
   var pk=p.peek||{}, list=pk.list||p.list||[], ag=pk.agenda||p.agenda||[];
   var shown=list.slice(0,4);
   var rows=shown.map(function(s){
-    return '<div class="prow">'+pip(s.state)+'<span>'+clip(s.name,24)+'</span><em>'+(s.tool||String(s.state).replace('_',' '))+'</em></div>'}).join('');
+    return '<div class="prow">'+pip(s.state)+'<span>'+esc(clip(s.name,24))+'</span><em>'+esc(s.tool||String(s.state).replace('_',' '))+'</em></div>'}).join('');
   /* Count from what was SHOWN, not from a hard-coded four: a payload whose peek list is
      shorter than the budget (server truncated it, or peek.list is a custom subset) would
      otherwise under-report by exactly the difference. */
@@ -674,7 +685,7 @@ function drawPeek(p){
   /* All-day sits above the timed rows, labelled in the time slot rather than under a second
      heading — a heading would cost one of the four rows. */
   var adr=ad.map(function(a,i){
-    var n=clip(a.summary,16)+(more&&i===ad.length-1?'  +'+more:'');
+    var n=esc(clip(a.summary,16))+(more&&i===ad.length-1?'  +'+more:'');
     return '<div class="prow ag"><b class="ad">all day</b><span>'+n+'</span></div>'}).join('');
   var agr=adr+(rest.map(function(a){
     /* Source is IDENTIFICATION, not priority: it may not change loudness, order or hue
@@ -682,7 +693,7 @@ function drawPeek(p){
        right-hand slot, the same slot the session rows use for the tool, so the eye already
        reads that position as "what kind of thing is this". Only the minority is marked: the
        default source is unmarked, and a tag on every row is a tag on none. */
-    return '<div class="prow ag"><b>'+a.t+'</b><span>'+clip(a.name,28)+'</span>'
+    return '<div class="prow ag"><b>'+esc(a.t)+'</b><span>'+esc(clip(a.name,28))+'</span>'
       +srcTag(a.source,p.defaultSource)+'</div>'}).join('')
     || '<div class="prow ag"><span style="color:var(--text-dim)">nothing after this</span></div>');
   PEEK_ROWS=Math.max(shown.length+(total>shown.length?1:0),1)+ad.length+timedRows;

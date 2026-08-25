@@ -1067,6 +1067,20 @@ function readBody(req, cb) {
 const server = http.createServer((req, res) => {
   const url = (req.url || '/').split('?')[0];
 
+  // A loopback bind keeps other machines out; it does not keep a web page out. A site the
+  // user visits can POST here, and DNS rebinding can point a hostname the site controls at
+  // 127.0.0.1 and then read the replies. Both are visible in these two headers: a rebound
+  // request carries the attacker's Host, and any browser-issued cross-site request carries
+  // an Origin. Local callers - the hook, the app - send neither.
+  const host = String(req.headers.host || '').split(':')[0];
+  if (host && host !== '127.0.0.1' && host !== 'localhost') {
+    res.writeHead(403); res.end(); return;
+  }
+  const origin = req.headers.origin;
+  if (origin && origin !== `http://127.0.0.1:${PORT}` && origin !== `http://localhost:${PORT}`) {
+    res.writeHead(403); res.end(); return;
+  }
+
   // Invariant 2: /hook answers 204 before any work happens.
   if (url === '/hook' && req.method === 'POST') {
     res.writeHead(204);
